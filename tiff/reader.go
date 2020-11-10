@@ -530,6 +530,15 @@ func newDecoder(r io.Reader) (*decoder, error) {
 		} else {
 			d.config.ColorModel = color.GrayModel
 		}
+	case pCMYK:
+		// hack CMYK
+		switch d.firstVal(tExtraSamples) {
+		case 0:
+			d.mode = mRGBA // HACK
+			d.config.ColorModel = color.RGBAModel
+		default:
+			return nil, FormatError("wrong number of samples for CMYK")
+		}
 	default:
 		return nil, UnsupportedError("color model")
 	}
@@ -633,6 +642,8 @@ func Decode(r io.Reader) (img image.Image, err error) {
 		} else {
 			img = image.NewRGBA(imgRect)
 		}
+	case mCMYK:
+		img = image.NewCMYK(imgRect)
 	}
 
 	for i := 0; i < blocksAcross; i++ {
