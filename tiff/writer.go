@@ -104,20 +104,8 @@ func encodeGray16(w io.Writer, pix []uint8, dx, dy, stride int, predictor bool) 
 	return nil
 }
 
-func encodeRGBA(w io.Writer, pix []uint8, dx, dy, stride int, predictor bool, excludeAlpha bool) error {
+func encodeRGBA(w io.Writer, pix []uint8, dx, dy, stride int, predictor bool) error {
 	if !predictor {
-		if excludeAlpha {
-			pixExcludeAlpha := make([]uint8, dy*dx*3)
-			j := 0
-			for i, v := range pix {
-				if (i+1)%4 == 0 {
-					continue
-				}
-				pixExcludeAlpha[j] = v
-				j++
-			}
-			return writePix(w, pixExcludeAlpha, dy, dx*3, dx*3)
-		}
 		return writePix(w, pix, dy, dx*4, stride)
 	}
 	buf := make([]byte, dx*4)
@@ -177,6 +165,13 @@ func encodeRGBA64(w io.Writer, pix []uint8, dx, dy, stride int, predictor bool) 
 		}
 	}
 	return nil
+}
+
+func encodeNChannel(w io.Writer, pix []uint8, dx, dy, stride int, predictor bool, nChannels int) error {
+	if predictor {
+		return fmt.Errorf("not supported")
+	}
+	return writePix(w, pix, dy, dx*nChannels, stride)
 }
 
 func encode(w io.Writer, m image.Image, predictor bool) error {
@@ -296,8 +291,6 @@ type Options struct {
 	// types of images and compressors. For example, it works well for
 	// photos with Deflate compression.
 	Predictor bool
-	// ExcludeAlpha does NOT include the alpha channel when writing a RGBA image
-	ExcludeAlpha bool
 }
 
 // Encode writes the image m to w. opt determines the options used for
@@ -312,9 +305,6 @@ func Encode(w io.Writer, m image.Image, opt *Options) error {
 		compression = opt.Compression.specValue()
 		// The predictor field is only used with LZW. See page 64 of the spec.
 		predictor = opt.Predictor && compression == cLZW
-		if predictor && opt.ExcludeAlpha {
-			return fmt.Errorf("options {predictor, excludeAlpha} not supported together")
-		}
 	}
 
 	_, err := io.WriteString(w, leHeader)
@@ -347,12 +337,10 @@ func Encode(w io.Writer, m image.Image, opt *Options) error {
 			imageLen = d.X * d.Y * 8
 		case *image.NRGBA64:
 			imageLen = d.X * d.Y * 8
+		case *ImageNChannel:
+			return fmt.Errorf("not supported")
 		default:
-			if opt.ExcludeAlpha {
-				imageLen = d.X * d.Y * 3
-			} else {
-				imageLen = d.X * d.Y * 4
-			}
+			imageLen = d.X * d.Y * 4
 		}
 		err = binary.Write(w, enc, uint32(imageLen+8))
 		if err != nil {
@@ -397,25 +385,26 @@ func Encode(w io.Writer, m image.Image, opt *Options) error {
 		err = encodeGray16(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
 	case *image.NRGBA:
 		extraSamples = 2 // Unassociated alpha.
-		err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor, false)
+		err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
 	case *image.NRGBA64:
 		extraSamples = 2 // Unassociated alpha.
 		bitsPerSample = []uint32{16, 16, 16, 16}
 		err = encodeRGBA64(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
 	case *image.RGBA:
-		if opt.ExcludeAlpha {
-			// no alpha
-			samplesPerPixel = 3
-			extraSamples = 0
-			bitsPerSample = []uint32{8, 8, 8}
-		} else {
-			extraSamples = 1 // Associated alpha.
-		}
-		err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor, opt.ExcludeAlpha)
+		extraSamples = 1 // Associated alpha.
+		err = encodeRGBA(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
 	case *image.RGBA64:
 		extraSamples = 1 // Associated alpha.
 		bitsPerSample = []uint32{16, 16, 16, 16}
 		err = encodeRGBA64(dst, m.Pix, d.X, d.Y, m.Stride, predictor)
+	case *ImageNChannel:
+		extraSamples = 0 // no alpha
+		samplesPerPixel = uint32(m.Nchannels)
+		bitsPerSample = make([]uint32, m.Nchannels)
+		for i := 0; i < m.Nchannels; i++ {
+			bitsPerSample[i] = 8
+		}
+		err = encodeNChannel(dst, m.Pix, d.X, d.Y, m.Stride, predictor, m.Nchannels)
 	default:
 		extraSamples = 1 // Associated alpha.
 		err = encode(dst, m, predictor)
