@@ -118,6 +118,7 @@ const (
 	mRGBA
 	mNRGBA
 	mCMYK
+	mNChannel
 )
 
 // CompressionType describes the type of compression used in Options.

@@ -120,6 +120,7 @@ func (d *decoder) parseIFD(p []byte) (int, error) {
 	case tBitsPerSample,
 		tExtraSamples,
 		tPhotometricInterpretation,
+		tSamplesPerPixel,
 		tCompression,
 		tPredictor,
 		tStripOffsets,
@@ -391,6 +392,22 @@ func (d *decoder) decode(dst image.Image, xmin, ymin, xmax, ymax int) error {
 				copy(img.Pix[min:max], d.buf[i0:i1])
 			}
 		}
+	case mNChannel:
+		if d.bpp == 16 {
+			return fmt.Errorf("not supported")
+		}
+		img := dst.(*ImageNChannel)
+		for y := ymin; y < rMaxY; y++ {
+			min := img.PixOffset(xmin, y)
+			max := img.PixOffset(rMaxX, y)
+			i0, i1 := (y-ymin)*(xmax-xmin)*img.Nchannels, (y-ymin+1)*(xmax-xmin)*img.Nchannels
+			if i1 > len(d.buf) {
+				return errNoPixels
+			}
+			copy(img.Pix[min:max], d.buf[i0:i1])
+		}
+	default:
+		return fmt.Errorf("unknown color model")
 	}
 
 	return nil
@@ -462,8 +479,9 @@ func newDecoder(r io.Reader) (*decoder, error) {
 	}
 
 	// Determine the image mode.
-	switch d.firstVal(tPhotometricInterpretation) {
-	case pRGB:
+	photoInterp := d.firstVal(tPhotometricInterpretation)
+	samplesPerPix := len(d.features[tBitsPerSample])
+	if photoInterp == pRGB && samplesPerPix == 3 {
 		if d.bpp == 16 {
 			for _, b := range d.features[tBitsPerSample] {
 				if b != 16 {
@@ -483,7 +501,7 @@ func newDecoder(r io.Reader) (*decoder, error) {
 		//
 		// This implementation does not support extra samples
 		// of an unspecified type.
-		switch len(d.features[tBitsPerSample]) {
+		switch samplesPerPix {
 		case 3:
 			d.mode = mRGB
 			if d.bpp == 16 {
@@ -513,34 +531,28 @@ func newDecoder(r io.Reader) (*decoder, error) {
 		default:
 			return nil, FormatError("wrong number of samples for RGB")
 		}
-	case pPaletted:
+	} else if photoInterp == pPaletted {
 		d.mode = mPaletted
 		d.config.ColorModel = color.Palette(d.palette)
-	case pWhiteIsZero:
+	} else if photoInterp == pWhiteIsZero && samplesPerPix == 1 {
 		d.mode = mGrayInvert
 		if d.bpp == 16 {
 			d.config.ColorModel = color.Gray16Model
 		} else {
 			d.config.ColorModel = color.GrayModel
 		}
-	case pBlackIsZero:
+	} else if photoInterp == pBlackIsZero && samplesPerPix == 1 {
 		d.mode = mGray
 		if d.bpp == 16 {
 			d.config.ColorModel = color.Gray16Model
 		} else {
 			d.config.ColorModel = color.GrayModel
 		}
-	case pCMYK:
-		// hack CMYK
-		switch d.firstVal(tExtraSamples) {
-		case 0:
-			d.mode = mRGBA // HACK
-			d.config.ColorModel = color.RGBAModel
-		default:
-			return nil, FormatError("wrong number of samples for CMYK")
-		}
-	default:
-		return nil, UnsupportedError("color model")
+	} else if samplesPerPix >= 2 && samplesPerPix <= 4 && d.firstVal(tExtraSamples) == 0 {
+		d.mode = mNChannel
+		d.config.ColorModel = NChannelModel
+	} else {
+		return nil, UnsupportedError(fmt.Sprintf("color model with %d channels", samplesPerPix))
 	}
 
 	return d, nil
@@ -642,8 +654,10 @@ func Decode(r io.Reader) (img image.Image, err error) {
 		} else {
 			img = image.NewRGBA(imgRect)
 		}
-	case mCMYK:
-		img = image.NewCMYK(imgRect)
+	case mNChannel:
+		img = NewNChannel(imgRect, len(d.features[tBitsPerSample]))
+	default:
+		return nil, fmt.Errorf("unsupported")
 	}
 
 	for i := 0; i < blocksAcross; i++ {
